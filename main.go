@@ -1,16 +1,13 @@
 package main
 
 import (
-	"context"
+	"archive/zip"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-
-	"github.com/go-ole/go-ole"
-	"github.com/go-ole/go-ole/oleutil"
-	"github.com/mholt/archiver/v4"
+	"strings"
 )
 
 // downloadFile downloads a file from the given URL and saves it to the specified path.
@@ -34,73 +31,69 @@ func downloadFile(filepath string, url string) error {
 	return err
 }
 
-// extractZIP extracts a ZIP file to the specified destination directory.
+// extractZIP extracts files from a ZIP archive to the specified destination directory.
 func extractZIP(zipPath, destDir string) error {
-	zip := archiver.Zip{}
-
-	// Open the ZIP file
-	file, err := os.Open(zipPath)
+	r, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer r.Close()
 
-	return zip.Extract(context.Background(), file, []string{destDir}, nil)
-}
-
-// createShortcut creates a desktop shortcut for the specified executable.
-func createShortcut(exePath, shortcutPath string) error {
-	ole.CoInitialize(0)
-	defer ole.CoUninitialize()
-
-	unknown, err := oleutil.CreateObject("WScript.Shell")
-	if err != nil {
-		return err
-	}
-	defer unknown.Release()
-
-	shell, err := unknown.QueryInterface(ole.IID_IDispatch)
-	if err != nil {
-		return err
-	}
-	defer shell.Release()
-
-	shortcut, err := oleutil.CallMethod(shell, "CreateShortcut", shortcutPath)
-	if err != nil {
-		return err
-	}
-	shortcutObj := shortcut.ToIDispatch()
-	defer shortcutObj.Release()
-
-	_, err = oleutil.PutProperty(shortcutObj, "TargetPath", exePath)
+	// Create destination directory if it doesn't exist
+	err = os.MkdirAll(destDir, os.ModePerm)
 	if err != nil {
 		return err
 	}
 
-	_, err = oleutil.CallMethod(shortcutObj, "Save")
-	if err != nil {
-		return err
-	}
+	// Iterate through each file in the ZIP archive
+	for _, f := range r.File {
+		// Check if the file is within the cheklistMakerFiles-main folder
+		if strings.HasPrefix(f.Name, "cheklistMakerFiles-main/") {
+			// Trim the prefix to get relative path within cheklistMakerFiles-main
+			relPath := strings.TrimPrefix(f.Name, "cheklistMakerFiles-main/")
+			path := filepath.Join(destDir, relPath)
 
+			if f.FileInfo().IsDir() {
+				// Create directory
+				os.MkdirAll(path, os.ModePerm)
+			} else {
+				// Create file's directory
+				dir := filepath.Dir(path)
+				os.MkdirAll(dir, os.ModePerm)
+
+				// Open file from ZIP
+				rc, err := f.Open()
+				if err != nil {
+					return err
+				}
+				defer rc.Close()
+
+				// Create destination file
+				w, err := os.Create(path)
+				if err != nil {
+					return err
+				}
+				defer w.Close()
+
+				// Copy contents from ZIP file to destination file
+				_, err = io.Copy(w, rc)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return nil
 }
 
 func main() {
-	zipURL := "C:\\checklistMakerGo.zip" // Replace with your ZIP file URL
+	zipURL := "https://github.com/markallenarchviz/cheklistMakerFiles/archive/refs/heads/main.zip" // Replace with your ZIP file URL
 	zipPath := "downloaded.zip"
-	destDir := "C:\\teste"            // Replace with your destination directory
-	exeName := "checklistMakerGo.exe" // Replace with your executable name
-
-	// Create destination directory if it doesn't exist
-	err := os.MkdirAll(destDir, os.ModePerm)
-	if err != nil {
-		fmt.Println("Error creating destination directory:", err)
-		return
-	}
+	destDir := "C:\\checklistMaker" // Replace with your destination directory
 
 	// Download the ZIP file
 	fmt.Println("Downloading ZIP file...")
-	err = downloadFile(zipPath, zipURL)
+	err := downloadFile(zipPath, zipURL)
 	if err != nil {
 		fmt.Println("Error downloading file:", err)
 		return
@@ -125,16 +118,32 @@ func main() {
 	}
 	fmt.Println("Deleted ZIP file:", zipPath)
 
-	// Create desktop shortcut
-	exePath := filepath.Join(destDir, exeName)
-	desktopDir := filepath.Join(os.Getenv("USERPROFILE"), "Desktop")
-	shortcutPath := filepath.Join(desktopDir, exeName+".lnk")
+	// Copy checklistMakerGo.lnk to desktop
+	src := filepath.Join(destDir, "checklistMakerFiles-main", "checklistMakerGo.lnk")
+	dst := filepath.Join(os.Getenv("USERPROFILE"), "Desktop", "checklistMakerGo.lnk")
 
-	fmt.Println("Creating desktop shortcut...")
-	err = createShortcut(exePath, shortcutPath)
+	err = copyFile(src, dst)
 	if err != nil {
-		fmt.Println("Error creating shortcut:", err)
+		fmt.Println("Error copying file to desktop:", err)
 		return
 	}
-	fmt.Println("Created desktop shortcut:", shortcutPath)
+	fmt.Println("Copied checklistMakerGo.lnk to desktop.")
+}
+
+// copyFile copies a file from src to dst.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
